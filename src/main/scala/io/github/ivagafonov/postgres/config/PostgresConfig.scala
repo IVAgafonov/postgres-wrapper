@@ -1,4 +1,4 @@
-package io.github.ivagafonov.config
+package io.github.ivagafonov.postgres.config
 
 case class PostgresConfig(
                            host: String,

@@ -1,6 +1,6 @@
-package io.github.ivagafonov.datasource
+package io.github.ivagafonov.postgres.datasource
 
-import io.github.ivagafonov.config.PostgresConfig
+import io.github.ivagafonov.postgres.config.PostgresConfig
 import org.apache.commons.dbcp2.BasicDataSource
 
 import java.sql.{Connection, PreparedStatement, ResultSet, Statement}
