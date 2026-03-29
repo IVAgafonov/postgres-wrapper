@@ -7,6 +7,7 @@ import java.sql.{Connection, PreparedStatement, ResultSet, Statement}
 import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
 
+case class ResultAndTotal[T](result: Seq[T], total: Long)
 
 trait PostgresDataSource {
 
@@ -24,20 +25,44 @@ trait PostgresDataSource {
   ds.setMaxTotal(config.poolMaxSize)
 
   protected def getArrayAndMap[T](query: String)(rs: ResultSet => T): Seq[T] = {
-    withConnection(c => {
-      val stmt = c.createStatement()
-      stmt.setFetchSize(1000)
-      processResultSet(stmt.executeQuery(query))(rs)
-    })
+    getArrayWithParamsAndMap(query)(_ => ())(rs)
   }
 
-  protected def getArrayWithParamsAndMap[T](query: String)(p: PreparedStatement => Unit)(rs: ResultSet => T): Seq[T] = {
+  protected def getArrayWithParamsAndMap[T](query: String, fetchSize: Int = 1000)(p: PreparedStatement => Unit)(rs: ResultSet => T): Seq[T] = {
     withConnection(c => {
       val stmt = c.prepareStatement(query)
-      stmt.setFetchSize(1000)
+      stmt.setFetchSize(fetchSize)
       p(stmt)
       processResultSet(stmt.executeQuery)(rs)
     })
+  }
+
+  protected def getArrayAndTotalWithParamsAndMap[T](query: String, totalRowName: String, fetchSize: Int = 1000)(p: PreparedStatement => Unit)(rs: ResultSet => T): ResultAndTotal[T] = {
+    withConnection(c => {
+      val stmt = c.prepareStatement(query)
+      stmt.setFetchSize(fetchSize)
+      p(stmt)
+      processResultSetAndTotal(stmt.executeQuery, totalRowName)(rs)
+    })
+  }
+
+  protected def getStreamWithParamsAndMap[T](query: String, chunkSize: Int = 100, from: Long = 0)(p: PreparedStatement => Unit)(rs: ResultSet => T): LazyList[Seq[T]] = {
+    def getSeq(query: String, chunkSize: Int = 100, from: Long = 0): Seq[T] = {
+      withConnection(c => {
+        val stmt = c.prepareStatement(query + s" LIMIT $chunkSize OFFSET $from")
+        stmt.setFetchSize(chunkSize)
+        p(stmt)
+        processResultSet(stmt.executeQuery)(rs)
+      })
+    }
+    LazyList.unfold[Seq[T], (Long, Int)](from -> 0) { case (page, lastSelectCount: Int) =>
+      if (page != 0 && lastSelectCount < chunkSize) {
+        None
+      } else {
+        val seq = getSeq(query, chunkSize, page * chunkSize)
+        Some(seq, page + 1 -> seq.size)
+      }
+    }
   }
 
   protected def updateWithParams(query: String)(p: PreparedStatement => Unit): Int = {
@@ -65,6 +90,10 @@ trait PostgresDataSource {
     withConnectionInternal(connection).asInstanceOf[Seq[T]]
   }
 
+  private def withConnection[T](connection: Connection => ResultAndTotal[T]): ResultAndTotal[T] = {
+    withConnectionInternal(connection).asInstanceOf[ResultAndTotal[T]]
+  }
+
   private def withConnection(connection: Connection => Int): Int = {
     withConnectionInternal(connection).asInstanceOf[Int]
   }
@@ -79,7 +108,9 @@ trait PostgresDataSource {
       case NonFatal(e) =>
         throw e
     } finally {
-      closeConnection(c)
+      if (c != null) {
+        c.close()
+      }
     }
   }
 
@@ -92,9 +123,17 @@ trait PostgresDataSource {
     res.toSeq
   }
 
-  private def closeConnection(c: Connection): Unit = {
-    if (c != null) {
-      c.close()
+  private def processResultSetAndTotal[T](rs: ResultSet, totalRowName: String)(m: ResultSet => T): ResultAndTotal[T] = {
+    val res = new ArrayBuffer[T]()
+
+    var total: Long = 0
+    while (rs.next()) {
+      if (total == 0) {
+        total = rs.getLong(totalRowName)
+      }
+      res.addOne(m(rs))
     }
+
+    ResultAndTotal(res.toSeq, total)
   }
 }

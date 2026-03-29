@@ -7,3 +7,5 @@ hs_err_pid*
 .idea
 .bsp
 target
+
+src/main/scala/io/github/ivagafonov/postgres/debug
